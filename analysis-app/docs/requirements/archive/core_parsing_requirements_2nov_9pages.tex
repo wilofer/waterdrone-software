@@ -1,0 +1,577 @@
+\documentclass{article}
+
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[hidelinks]{hyperref}
+
+\setlength{\emergencystretch}{3em}
+\newenvironment{card}{\par\smallskip\noindent\begin{minipage}{\linewidth}}{\end{minipage}\par}
+\lstset{basicstyle=\ttfamily\footnotesize, frame=single, keepspaces=true,
+        showstringspaces=false}
+\lstdefinestyle{sig}{frame=none, backgroundcolor=\color{gray!12},
+        aboveskip=5pt, belowskip=2pt}
+
+\title{UKRAINIX WATERDRONE\\[2mm]
+       Technical Requirements: \texttt{core} and \texttt{parsing}\\[2mm]
+       \large analysis-app, first implementation step}
+\author{UKRAINIX WATERDRONE project}
+\date{2 November 2026}
+
+\begin{document}
+
+\maketitle
+
+\noindent This document tells the person implementing the first two packages of
+\path{analysis-app/src/analysis_app/} what to write: which files and
+functions, what goes in and out, and what may be assumed to exist already. It
+covers \path{core/} and \path{parsing/} only; nothing else from the planned
+layout is considered.
+
+% =====================================================================
+\section{Scope and ground rules}
+
+\subsection{Files to write}
+
+{\small
+\begin{longtable}{@{}p{0.30\textwidth}p{0.64\textwidth}@{}}
+\toprule
+\textbf{File} & \textbf{Content}\\
+\midrule
+\endhead
+\path{core/types.py} & Column-name constants, the \path{Table} alias, three
+  data containers, four exceptions (no functions).\\
+\path{core/config.py} & Path helper, text-dictionary reader, defaults access
+  (5 functions).\\
+\path{core/functional.py} & Two small table helpers (2 functions).\\
+\path{core/__init__.py} & Re-exports every public name of the three files.\\
+\path{parsing/coordinates.py} & Latitude/longitude to local metres and back,
+  validity check, distance, error estimate (6 functions).\\
+\path{parsing/csv_parser.py} & CSV reading, column detection, row validation,
+  building the sample (9 functions).\\
+\path{parsing/__init__.py} & Re-exports every public name of the two files.\\
+\bottomrule
+\end{longtable}
+}
+
+\subsection{Ground rules}
+
+\begin{itemize}
+\item \textbf{Functional style.} Plain functions, no classes except
+      \path{NamedTuple} containers and exception classes. A function never
+      modifies its inputs; it returns new objects.
+\item \textbf{File access only where named.} Only \path{read_text_dictionary},
+      \path{load_defaults}, \path{read_csv} and \path{load_sample} touch the
+      disk. Everything else is pure.
+\item \textbf{NumPy arrays are the primary data type.} All sample data are
+      one-dimensional arrays of shape \path{(n,)}: \path{float64}, except
+      timestamps (\path{int64}). A missing value is \path{nan}.
+\item \textbf{Units.} Angles are in degrees at every public interface
+      (radians only inside a function). Lengths are in metres.
+\item \textbf{Type hints and docstrings} on every function: one summary line,
+      then arguments, return value and raised exceptions.
+\item \textbf{Errors} are raised as the project exceptions of
+      \path{core/types.py}, never as \path{print} or \path{assert}.
+\item \textbf{Imports.} Other code imports from the package
+      (\path{analysis_app.core}, \path{analysis_app.parsing}), never from a
+      file inside it. \path{core} imports nothing from \path{parsing}.
+\end{itemize}
+
+Dependencies inside this task: \path{core/functional.py} and
+\path{core/config.py} use \path{core/types.py}; \path{parsing/coordinates.py}
+uses \path{core}; \path{parsing/csv_parser.py} uses \path{core} and
+\path{parsing/coordinates.py}. \path{core/types.py} imports nothing from the
+project.
+
+% =====================================================================
+\section{What is assumed to be available}
+\label{sec:assumed}
+
+Python 3.10 or newer (assumption; the code uses \path{X | None} annotations),
+NumPy, and the standard library. \textbf{Not available:} pandas, scipy,
+matplotlib, and every other package of the app (normalization, isolines,
+physics, inversion, pipeline, viz, gui).
+
+The building blocks below are the only external calls the two packages need.
+Their behaviour was checked with NumPy 2.5.
+
+{\small
+\begin{longtable}{@{}p{0.40\textwidth}p{0.55\textwidth}@{}}
+\toprule
+\textbf{Call} & \textbf{What it returns}\\
+\midrule
+\endhead
+\path{csv.reader(f)} & Iterator over rows; each row is a list of
+  \path{str}.\\
+\path{np.genfromtxt(path, delimiter=",", skip_header=1, encoding="utf-8")} &
+  2-D \path{float64} array (rows $\times$ columns). Empty and non-numeric cells
+  become \path{nan}. One data row gives shape \path{(n_cols,)}; a header-only
+  file gives shape \path{(0,)}; a row with the wrong number of columns raises
+  \path{ValueError}.\\
+\path{np.atleast_2d(a)} & \path{a} with at least two dimensions (turns
+  \path{(n_cols,)} into \path{(1, n_cols)}).\\
+\path{np.isnan(a)}, \path{np.isfinite(a)} & Boolean array, same shape.\\
+\path{np.argsort(a, kind="stable")} & Integer indices that sort \path{a};
+  equal values keep their order.\\
+\path{np.diff(a)} & \path{a[1:] - a[:-1]}, length $n-1$.\\
+\path{np.hypot(dx, dy)} & Element-wise $\sqrt{dx^2+dy^2}$.\\
+\path{np.median(a)} & Median as a float.\\
+\path{np.radians}, \path{np.degrees}, \path{np.sin}, \path{np.cos},
+  \path{np.arcsin}, \path{np.sqrt}, \path{np.clip} & Element-wise maths on
+  arrays.\\
+\path{Path(__file__).resolve().parents[k]} & The $k$-th parent folder of the
+  current file, as a \path{Path}.\\
+\path{a.flags.writeable = False} & Makes an array read-only; assigning to an
+  element then raises \path{ValueError}.\\
+\path{s.isupper()} & \path{True} if all letters of \path{s} are capitals and
+  there is at least one: \path{"PARAM_A"} is \path{True}, \path{"Param"} is
+  \path{False}.\\
+\bottomrule
+\end{longtable}
+}
+
+% =====================================================================
+\section{Package \texttt{core}}
+
+\subsection{\texttt{types.py}}
+
+No functions. Define the following.
+
+\paragraph{Constants.}
+\path{COL_TIMESTAMP = "TIMESTAMP"}, \path{COL_LATITUDE = "LATITUDE"},
+\path{COL_LONGITUDE = "LONGITUDE"}, \path{COL_DEPTH = "Z"};
+\path{REQUIRED_COLUMNS} = (timestamp, latitude, longitude);
+\path{FIXED_COLUMNS} = \path{REQUIRED_COLUMNS} plus the depth column.
+
+\paragraph{Alias.}
+\path{Table = dict[str, np.ndarray]}: CSV column name $\to$ one-dimensional
+array; all arrays have the same length; key order is the file order.
+
+\paragraph{Containers} (\path{NamedTuple}, no methods):
+
+{\small
+\begin{longtable}{@{}p{0.17\textwidth}p{0.77\textwidth}@{}}
+\toprule
+\textbf{Name} & \textbf{Fields}\\
+\midrule
+\endhead
+\path{RefOrigin} & \path{lat0_deg: float}, \path{lon0_deg: float}\\
+\path{Sample} & \path{source: str}; \path{t: ndarray} (int64);
+  \path{lat_deg}, \path{lon_deg}, \path{x}, \path{y}: \path{ndarray} (float64,
+  \path{x}, \path{y} in metres); \path{depth: ndarray | None};
+  \path{values: dict[str, ndarray]} (parameter name $\to$ readings);
+  \path{ref_origin: RefOrigin}\\
+\path{ParseReport} & \path{source: str}; \path{n_rows_read},
+  \path{n_dropped_nan}, \path{n_dropped_bad_coordinates},
+  \path{n_dropped_duplicate_time}, \path{n_dropped_glitch},
+  \path{n_rows_kept}: \path{int}; \path{parameters: tuple[str, ...]};
+  \path{ignored_columns: tuple[str, ...]}\\
+\bottomrule
+\end{longtable}
+}
+
+\noindent Invariants of a \path{Sample}: at least one point; all arrays have
+the same length; \path{t} is strictly increasing; no \path{nan} anywhere;
+every array is read-only.
+
+\paragraph{Exceptions.} \path{WaterdroneError} (derived from \path{Exception}) is the base class;
+\path{CsvFormatError}, \path{ConfigError} and \path{CoordinateError} derive
+from it.
+
+\subsection{\texttt{config.py}}
+
+Assumes the repository layout \path{analysis-app/src/analysis_app/core/config.py}.
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def app_root() -> Path
+def config_dir() -> Path
+\end{lstlisting}
+\textbf{Does.} \path{app_root} returns the \path{analysis-app} folder,
+computed from \path{__file__} (\path{parents[3]}), so it does not depend on the
+working directory. \path{config_dir} returns \path{app_root() / "config"}.
+\textbf{Returns.} absolute \path{Path}. \textbf{Raises.} nothing.
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def read_text_dictionary(path: Path) -> dict[str, str]
+\end{lstlisting}
+\textbf{Does.} Reads a text file made of lines \texttt{KEY value}: the key is the
+first word, the value is the rest of the line with surrounding spaces removed.
+Blank lines and lines starting with \path{#} are skipped. Values stay strings.
+\textbf{Returns.} dictionary in file order. \textbf{Raises.}
+\path{ConfigError} if the file is missing, a line has a key but no value, or a
+key appears twice.
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def load_defaults(path: Path | None = None) -> dict[str, str]
+\end{lstlisting}
+\textbf{Does.} Reads the file \path{defaults.txt} in \path{config_dir()} (or the
+file \path{path}) with \path{read_text_dictionary}. \textbf{Returns.} the dictionary, or an empty dictionary
+if the default file does not exist (the file is optional; it is only planned).
+\textbf{Raises.} \path{ConfigError} for a malformed file.
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def get_float(settings: Mapping[str, str], key: str,
+              fallback: float) -> float
+\end{lstlisting}
+\textbf{Does.} Converts \path{settings[key]} to a float. \textbf{Returns.}
+\path{fallback} if the key is missing. \textbf{Raises.} \path{ConfigError} if
+the value is not a number.
+\end{card}
+
+\subsection{\texttt{functional.py}}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def table_length(table: Table) -> int
+\end{lstlisting}
+\textbf{Does.} Returns the common length of all columns; \path{0} for a table
+without columns. \textbf{Raises.} \path{ValueError} if the columns have
+different lengths.
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def select_rows(table: Table, selector: np.ndarray) -> Table
+\end{lstlisting}
+\textbf{Does.} Applies one row selector to every column: \path{selector} is a
+boolean mask of length $n$ or an array of integer row indices. \textbf{Returns.}
+a new table with the same keys in the same order; the input is not changed.
+\textbf{Raises.} \path{ValueError} if a boolean mask has the wrong length.
+\end{card}
+
+% =====================================================================
+\section{Package \texttt{parsing}}
+
+\subsection{\texttt{coordinates.py}}
+\label{sec:coord}
+
+Constant: \path{EARTH_RADIUS_M = 6_371_000.0}. All functions accept arrays of
+any length, including length 0, unless stated otherwise. Let $R$ be the Earth
+radius, $\varphi,\lambda$ latitude and longitude in radians and
+$(\varphi_0,\lambda_0)$ the reference origin. The projection is the simple
+small-area one
+\begin{equation*}
+  x = R\cos\varphi_0\,(\lambda-\lambda_0), \qquad y = R\,(\varphi-\varphi_0),
+\end{equation*}
+and its inverse is $\varphi=\varphi_0+y/R$,
+$\lambda=\lambda_0+x/(R\cos\varphi_0)$. This is a stand-in: the final formula
+and error estimate follow the team's T3 lecture notes. It must therefore live
+in exactly \emph{one} function pair (\path{latlon_to_local} and
+\path{local_to_latlon}), so it can be replaced without touching other code.
+Tracks crossing the 180$^\circ$ meridian or a pole are not supported.
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def valid_latlon_mask(lat_deg: np.ndarray,
+                      lon_deg: np.ndarray) -> np.ndarray
+\end{lstlisting}
+\textbf{Returns.} boolean array: \path{True} where both values are finite and
+$-90\le\text{lat}\le90$, $-180\le\text{lon}\le180$.
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def choose_reference_origin(lat_deg: np.ndarray,
+                            lon_deg: np.ndarray) -> RefOrigin
+\end{lstlisting}
+\textbf{Does.} Uses the \emph{median} latitude and the median longitude (the
+median is not distorted by a stray GPS point). \textbf{Raises.}
+\path{CoordinateError} for empty or non-finite input.
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def latlon_to_local(lat_deg, lon_deg, origin: RefOrigin
+                    ) -> tuple[np.ndarray, np.ndarray]
+\end{lstlisting}
+\textbf{Returns.} \path{(x_m, y_m)}, same length as the input.
+\textbf{Raises.} \path{CoordinateError} if the two inputs have different
+shapes or contain non-finite values.
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def local_to_latlon(x_m, y_m, origin: RefOrigin
+                    ) -> tuple[np.ndarray, np.ndarray]
+\end{lstlisting}
+\textbf{Returns.} \path{(lat_deg, lon_deg)}; exact inverse of
+\path{latlon_to_local}. Same \textbf{Raises}.
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def great_circle_distance_m(lat1_deg, lon1_deg,
+                            lat2_deg, lon2_deg) -> np.ndarray
+\end{lstlisting}
+\textbf{Does.} Haversine distance on a sphere of radius $R$, element-wise
+(arguments may be arrays or scalars that broadcast):
+\begin{equation*}
+  a=\sin^2\tfrac{\Delta\varphi}{2}
+    +\cos\varphi_1\cos\varphi_2\sin^2\tfrac{\Delta\lambda}{2},\qquad
+  d = 2R\arcsin\sqrt{a}.
+\end{equation*}
+Clip $a$ to $[0,1]$ before the square root, because rounding can push it
+slightly above 1.
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def projection_error_estimate(lat_deg, lon_deg,
+                              origin: RefOrigin) -> float
+\end{lstlisting}
+\textbf{Does.} Largest absolute difference, in metres, between the local-plane
+distance $\sqrt{x_i^2+y_i^2}$ to the origin and the great-circle distance to
+the origin, over all points. A simple stand-in for the T3 error derivation.
+\textbf{Returns.} \path{0.0} for empty input.
+\end{card}
+
+\subsection{\texttt{csv\_parser.py}}
+
+Constants: \path{DEFAULT_MAX_SPEED_MPS = 20.0} (a placeholder, see
+Section~\ref{sec:open}), \path{SETTING_MAX_SPEED = "max_speed_mps"}.
+
+\paragraph{Table convention.} Inside this file a \path{Table} holds
+\path{float64} columns until \path{build_sample}. Every \path{drop_*} and
+\path{sort_by_time} function takes a table and returns a new table; it must
+work for tables with 0 or 1 rows.
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def read_csv(path: Path) -> Table
+\end{lstlisting}
+\textbf{Does.} Opens the file with \path{encoding="utf-8-sig"} (removes the
+byte-order mark that spreadsheet programs add) and \path{newline=""}; reads the
+header with \path{csv.reader}, strips spaces from the names; reads the data
+with \path{np.genfromtxt} (Section~\ref{sec:assumed}). \textbf{Returns.} table with all
+columns of the file, as \path{float64}. \textbf{Raises.} \path{CsvFormatError}
+for an empty header, a duplicate column name, no data rows, or a data row with
+the wrong number of columns. A missing file raises the usual
+\path{FileNotFoundError}.
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def detect_columns(columns: Iterable[str]
+                   ) -> tuple[tuple[str, ...], tuple[str, ...]]
+\end{lstlisting}
+\textbf{Does.} A \emph{parameter} is a column that is not in
+\path{FIXED_COLUMNS} and whose name satisfies \path{name.isupper()}. Any other
+column is \emph{ignored}. \textbf{Returns.} \path{(parameters, ignored)}, both
+in file order. \textbf{Raises.} \path{CsvFormatError} if a required column is
+missing (name it in the message) or if there is no parameter at all.
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def drop_nan_rows(table: Table) -> Table
+\end{lstlisting}
+\textbf{Does.} Removes every row in which \emph{any} column is \path{nan}.
+(Callers pass only the needed columns, so text in an ignored column cannot
+remove rows.)
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def drop_bad_coordinates(table: Table) -> Table
+\end{lstlisting}
+\textbf{Does.} Removes rows for which \path{valid_latlon_mask} is \path{False}.
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def sort_by_time(table: Table) -> Table
+\end{lstlisting}
+\textbf{Does.} Orders all rows by \path{TIMESTAMP}, ascending, with a stable
+sort.
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def drop_duplicate_timestamps(table: Table) -> Table
+\end{lstlisting}
+\textbf{Does.} Keeps only the first row of each timestamp. \textbf{Requires.}
+a table already sorted by time (state this in the docstring).
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def drop_gps_glitches(table: Table, origin: RefOrigin,
+                      max_speed_mps: float,
+                      timestamp_unit_s: float = 1.0) -> Table
+\end{lstlisting}
+\textbf{Does.} Converts positions to local metres with \path{origin} and
+removes isolated single-point spikes. \textbf{Requires.} sorted, unique
+timestamps. With $v_k$ the speed between point $k$ and $k+1$ (distance divided
+by $\Delta t\cdot$\path{timestamp_unit_s}), let $h_k = (v_k > v_{\max})$ for
+$k=0,\dots,n-2$. A point $i$ is a glitch if
+\begin{itemize}
+\item $0<i<n-1$: $h_{i-1}$ and $h_i$ are both true;
+\item $i=0$: $h_0$ is true and $h_1$ is false;
+\item $i=n-1$: $h_{n-2}$ is true and $h_{n-3}$ is false.
+\end{itemize}
+Tables with fewer than 3 rows are returned unchanged. Known limitation: two bad
+points in a row are not detected; say so in the docstring.
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def build_sample(table: Table, parameters: Sequence[str],
+                 origin: RefOrigin, source: str) -> Sample
+\end{lstlisting}
+\textbf{Requires.} a table that contains the required columns and all
+\path{parameters}, has no \path{nan}, and is sorted with unique timestamps.
+\textbf{Does.} Casts \path{TIMESTAMP} to \path{int64}; computes \path{x}, \path{y}
+with \path{latlon_to_local}; takes \path{depth} from the \path{Z} column if it
+exists, else \path{None}; collects \path{values} for the parameters only; sets
+every array read-only. \textbf{Raises.} \path{CsvFormatError} if no rows are
+left or if any \path{TIMESTAMP} is not a whole number.
+\end{card}
+
+\begin{card}
+\begin{lstlisting}[style=sig]
+def load_sample(path: Path, *, ref_origin: RefOrigin | None = None,
+                max_speed_mps: float | None = None,
+                timestamp_unit_s: float = 1.0
+                ) -> tuple[Sample, ParseReport]
+\end{lstlisting}
+\textbf{Does.} The one function other packages call. Steps, in this order:
+\begin{enumerate}
+\item \path{read_csv}; \path{detect_columns}.
+\item Keep only the required columns, the depth column if present, and the
+      parameters.
+\item \path{drop_nan_rows}, \path{drop_bad_coordinates}, \path{sort_by_time},
+      \path{drop_duplicate_timestamps}.
+\item If \path{ref_origin} is \path{None}, choose it with
+      \path{choose_reference_origin} from the remaining rows. (A caller that
+      loads a second file passes the first sample's origin so both overlay.)
+\item If \path{max_speed_mps} is \path{None}, take it with \path{get_float}
+      from \path{load_defaults()}, falling back to
+      \path{DEFAULT_MAX_SPEED_MPS}. Then \path{drop_gps_glitches}.
+\item \path{build_sample}.
+\end{enumerate}
+\textbf{Returns.} the sample and a \path{ParseReport}. Each \path{n_dropped_*}
+is the difference of \path{table_length} before and after the corresponding
+step; \path{n_rows_read} is the number of data rows in the file.
+\end{card}
+
+% =====================================================================
+\section{How to check the work}
+
+Testing for the whole app uses the repository-level \path{samples/} folder; the
+exact subfolder for the hand-made files below is still to be agreed. A short
+script that calls the functions and compares with the expected numbers is
+enough. The work is done when:
+
+\begin{enumerate}
+\item \textbf{Round trip.} Converting a few points with \path{latlon_to_local}
+      and back with \path{local_to_latlon} returns the input within
+      $10^{-9}$ degrees; the origin itself maps to $(0,0)$.
+\item \textbf{Clean file.} A hand-made file of about 100 clean rows loads with
+      nothing dropped and \path{n_rows_kept == 100}.
+\item \textbf{Defects.} A hand-made file of about 15 rows with one of each
+      defect (a \path{nan} cell, a text cell, latitude 95, a repeated
+      timestamp, two rows in the wrong order, one GPS spike in the middle)
+      gives the expected \path{ParseReport} counts and a \path{Sample} with
+      strictly increasing \path{t}.
+\item \textbf{Ignored columns.} A lower-case column is not a parameter and
+      appears in \path{ignored_columns}; text inside it does not drop rows.
+\item \textbf{Errors.} Missing \path{LATITUDE}, header only, no parameter
+      column and a duplicated column name each raise \path{CsvFormatError}.
+\item \textbf{Read-only.} \path{sample.x[0] = 0.0} raises \path{ValueError};
+      input tables are never modified.
+\item \textbf{Config and imports.} A dictionary file with comments, blank lines
+      and a duplicated key behaves as specified; a missing \path{defaults.txt}
+      gives an empty dictionary; \path{Sample} is importable from
+      \path{analysis_app.core} and \path{load_sample} from
+      \path{analysis_app.parsing}.
+\end{enumerate}
+
+% =====================================================================
+\section{Assumptions and open points}
+\label{sec:open}
+
+\begin{itemize}
+\item \textbf{Timestamp unit.} The CSV says only ``integer, computer time''.
+      The speed check assumes seconds; \path{timestamp_unit_s} exists so the
+      unit can be changed without editing code.
+\item \textbf{Maximum speed.} \path{DEFAULT_MAX_SPEED_MPS = 20.0} is a
+      placeholder. Replace it with a value based on the drone's real top
+      speed, or set \path{max_speed_mps} in \path{defaults.txt}.
+\item \textbf{NaN policy.} One \path{nan} in any used column removes the whole
+      row, including the other parameters of that row. Revisit if real data
+      has many isolated gaps.
+\item \textbf{Text file format.} \texttt{KEY value} lines are a proposal; the
+      physics dictionary will reuse the reader, so confirm it before more
+      files depend on it.
+\item \textbf{Projection.} The simple formula is provisional (see
+      Section~\ref{sec:coord}).
+\end{itemize}
+
+\subsection*{Deliberately not included}
+
+Planned items that these two packages do not need are \emph{not} part of this
+task and are added when the module that needs them is written:
+\path{compose}/\path{pipe} and per-parameter mapping in \path{functional.py};
+\path{samples_dir()} in \path{config.py}; the containers for mesh, isoline,
+origin, model spec and normalization result in \path{types.py}.
+
+% =====================================================================
+\section{Where to read (for beginners)}
+{\small
+
+\subsection*{NumPy}
+\begin{itemize}
+\item NumPy: the absolute basics for beginners (arrays, shape, dtype,
+      indexing, sorting):\\
+      \url{https://numpy.org/doc/stable/user/absolute_beginners.html}
+\item Indexing on ndarrays; read \emph{Boolean array indexing}, the basis of
+      \path{select_rows} and all \path{drop_*} functions:\\
+      \url{https://numpy.org/doc/stable/user/basics.indexing.html}
+\item \path{numpy.genfromtxt}, for \path{read_csv}:\\
+      \url{https://numpy.org/doc/stable/reference/generated/numpy.genfromtxt.html}
+\item Real Python, NumPy Tutorial: Your First Steps Into Data Science in Python
+      (vectorization, filtering, sorting):\\
+      \url{https://realpython.com/numpy-tutorial/}
+\item For \path{argsort}, \path{diff}, \path{hypot}, \path{median},
+      \path{isnan} and \path{clip}, use the search box of
+      \url{https://numpy.org/doc/stable/} and read the function's page.
+\end{itemize}
+
+\subsection*{Python}
+\begin{itemize}
+\item \path{csv} module (\path{csv.reader}, why \path{newline=""}):\\
+      \url{https://docs.python.org/3/library/csv.html}
+\item \path{pathlib} (\path{Path}, \path{resolve}, \path{parents},
+      \path{exists}):\\
+      \url{https://docs.python.org/3/library/pathlib.html}
+\item \path{typing} module; look for \path{NamedTuple} on the page:\\
+      \url{https://docs.python.org/3/library/typing.html}
+\item Errors and Exceptions (\path{try}/\path{except}, \path{raise}, your own
+      exception classes):\\
+      \url{https://docs.python.org/3/tutorial/errors.html}
+\end{itemize}
+
+\subsection*{Coordinates and distances}
+\begin{itemize}
+\item Movable Type Scripts, distance between two latitude/longitude points
+      (haversine formula, equirectangular approximation, with code):\\
+      \url{https://www.movable-type.co.uk/scripts/latlong.html}
+\item Haversine formula on Wikipedia (derivation, clipping note):\\
+      \url{https://en.wikipedia.org/wiki/Haversine_formula}
+\item The team's own T3 lecture notes (kept outside the repository):
+      \emph{coordinate system lecture}, \emph{geographic coordinates
+      translation} and \emph{error value derivation}.
+\end{itemize}
+
+}
+\end{document}

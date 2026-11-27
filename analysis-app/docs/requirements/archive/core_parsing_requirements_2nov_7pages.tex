@@ -1,0 +1,422 @@
+\documentclass{article}
+
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{needspace}
+\usepackage{listings}
+\usepackage[hidelinks]{hyperref}
+
+\setlength{\emergencystretch}{3em}
+\lstset{basicstyle=\ttfamily\footnotesize, keepspaces=true,
+        showstringspaces=false, backgroundcolor=\color{black!6},
+        xleftmargin=3pt, xrightmargin=3pt, framexleftmargin=3pt,
+        framexrightmargin=3pt, aboveskip=6pt, belowskip=4pt}
+\newcommand{\lnk}[1]{{\footnotesize\url{#1}}}
+
+\title{UKRAINIX WATERDRONE -- Analysis App\\[2mm]
+       Technical Requirements, Stage 1:\\[1mm]
+       \texttt{core} and \texttt{parsing} Modules}
+\author{UKRAINIX WATERDRONE project}
+\date{2 November 2026}
+
+\begin{document}
+
+\maketitle
+
+% =====================================================================
+\section{Scope}
+
+This document specifies the first piece of the analysis app that is to be
+written: the \path{core} package and the \path{parsing} package, both inside
+\path{analysis-app/src/analysis_app/}. It states what may be assumed, which
+files to create and which functions each file must contain.
+
+\paragraph{In scope.}
+The files listed in Section~\ref{sec:files}: five modules and the two
+\path{__init__.py} files.
+
+\paragraph{Out of scope -- do not write yet.}
+\begin{itemize}
+\item Every other package (normalization, isolines, physics, inversion,
+      pipeline, viz, gui). Do not add helpers ``because they will be needed
+      later''; they are added when the package that needs them is written.
+\item Data validation of any kind: missing values (NaN), GPS glitches,
+      duplicate timestamps, missing or misspelled columns, malformed rows.
+      Error handling and project exceptions are skipped as well. A file
+      that breaks the input assumptions below may crash the code or give
+      wrong numbers; that is acceptable at this stage.
+\item Reading configuration or dictionary text files.
+\end{itemize}
+
+\paragraph{Rules.}
+\begin{itemize}
+\item The primary data type is the numpy array (\texttt{numpy.ndarray}).
+      pandas is used only inside \path{read_csv}, which converts its result
+      to a numpy array before returning; no \texttt{DataFrame} or
+      \texttt{Series} is returned, stored in a \path{Sample} or used
+      elsewhere.
+\item Functional style: plain functions, no classes of your own. The only
+      class is the \texttt{NamedTuple} data container in \path{types.py}.
+\item Functions are pure (the result depends only on the arguments) and never
+      modify an input array in place. The one exception is \path{read_csv},
+      which is allowed to read from the disk.
+\item \path{core} imports nothing from the project. \path{parsing} imports
+      only from \path{core}, numpy, the Python standard library and, in
+      \path{csv_parser.py} only, pandas.
+\item Every function has type hints and a one-line docstring.
+\end{itemize}
+
+% =====================================================================
+\section{Assumptions}
+
+\subsection{Environment and conventions}
+
+\begin{itemize}
+\item Python~3.9 or newer (the signatures use hints such as
+      \texttt{dict[str, int]}) with numpy and pandas installed.
+\item No \path{pyproject.toml} exists yet. During development put
+      \path{analysis-app/src} on the Python path, for example by running
+      Python from that folder.
+\item Latitude and longitude are in degrees; local coordinates $x,y$ are in
+      metres; the Earth radius is $R = 6\,371\,000$~m.
+\item Per-point data are 1D arrays of length $n$ (the number of rows).
+      Timestamps are \texttt{int64}; all other numbers are \texttt{float64}.
+\item A reference origin is a tuple \path{(lat0, lon0)} of two Python floats,
+      in degrees, in this order.
+\end{itemize}
+
+\subsection{Input file}
+
+The input is a waterdrone CSV file:
+
+\begin{itemize}
+\item the first line is a header of comma-separated column names; every
+      following line is one measurement, all values numeric, the same number
+      of columns in every row, no quotes, no empty cells;
+\item the columns \texttt{TIMESTAMP} (integer), \texttt{LATITUDE} and
+      \texttt{LONGITUDE} are always present; a column \texttt{Z}
+      (measurement depth) may be present;
+\item every other column is a \emph{parameter}. The number of parameters and
+      their names are not known in advance, and the column order is
+      arbitrary, so columns must be found by name.
+\end{itemize}
+
+\Needspace{4\baselineskip}
+\subsection{Building blocks that are available}
+\label{sec:blocks}
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{0.42\textwidth}%
+                    >{\raggedright\arraybackslash}p{0.52\textwidth}@{}}
+\toprule
+\textbf{Call} & \textbf{Result}\\
+\midrule
+\endhead
+\texttt{pd.read\_csv(path)} &
+  a \texttt{DataFrame} (\texttt{import pandas as pd}): one column per CSV
+  column, the header line as column names, numbers parsed as numbers.\\
+\texttt{list(df.columns)}, \texttt{str.strip()} &
+  the column names as a list of text; one name without stray spaces.\\
+\texttt{df.to\_numpy(dtype=np.float64)} &
+  2D \texttt{float64} numpy array of shape (rows, columns), without index or
+  column names (also 2D for a one-row file).\\
+\texttt{table[:, i]} & column \path{i} of a 2D numpy array as a 1D array.\\
+\texttt{a.astype(np.int64)}, \path{a.copy()} & a converted array; an
+  independent copy.\\
+\path{np.mean(a)} & mean of an array as a number.\\
+\texttt{np.radians(a)}, \texttt{np.degrees(a)} & element-wise angle
+  conversion between degrees and radians.\\
+\path{np.cos(a)} & element-wise cosine (argument in radians).\\
+\bottomrule
+\end{longtable}
+
+Project modules: \path{parsing} may use everything in Section~\ref{sec:core};
+\path{core} may use none.
+
+}
+
+% =====================================================================
+\section{Files to create}
+\label{sec:files}
+
+\begin{lstlisting}
+src/analysis_app/
+|-- core/
+|   |-- __init__.py       re-exports the public names of types.py
+|   |-- types.py          constants + the Sample container
+|   |-- config.py         placeholder (docstring only)
+|   `-- functional.py     placeholder (docstring only)
+`-- parsing/
+    |-- __init__.py       re-exports the functions of both files
+    |-- csv_parser.py     read_csv, split_columns, build_sample,
+    |                     parse_csv
+    `-- coordinates.py    choose_reference_origin, latlon_to_xy,
+                          xy_to_latlon
+\end{lstlisting}
+
+Other code imports from the package, never from its files: for
+example \path{parse_csv} is imported from \path{analysis_app.parsing}, not
+from \path{analysis_app.parsing.csv_parser}.
+
+% =====================================================================
+\section{Package \texttt{core}}
+\label{sec:core}
+
+\subsection{\texttt{core/types.py}}
+
+This file contains no functions, only constants and one data container.
+
+\begin{lstlisting}
+from typing import NamedTuple, Optional
+import numpy as np
+
+COL_TIMESTAMP = "TIMESTAMP"
+COL_LATITUDE = "LATITUDE"
+COL_LONGITUDE = "LONGITUDE"
+COL_DEPTH = "Z"
+
+class Sample(NamedTuple):
+    t: np.ndarray                    # (n,) int64 timestamps
+    x: np.ndarray                    # (n,) float64, metres
+    y: np.ndarray                    # (n,) float64, metres
+    depth: Optional[np.ndarray]      # (n,) float64, or None
+    values: dict[str, np.ndarray]    # name -> (n,) float64
+    ref_origin: tuple[float, float]  # (lat0, lon0), degrees
+\end{lstlisting}
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{0.22\textwidth}%
+                    >{\raggedright\arraybackslash}p{0.72\textwidth}@{}}
+\toprule
+\textbf{Field} & \textbf{Meaning}\\
+\midrule
+\endhead
+\path{t} & timestamps exactly as in the file, as integers.\\
+\path{x}, \path{y} & local Cartesian position of every point, in metres,
+  relative to \path{ref_origin}.\\
+\path{depth} & the \texttt{Z} column, or \path{None} if the file has none.\\
+\path{values} & one entry per parameter column, in the same order as in
+  the file; every array has the same length as \path{t}.\\
+\path{ref_origin} & the latitude/longitude that corresponds to
+  $x=y=0$.\\
+\bottomrule
+\end{longtable}
+}
+
+A \texttt{NamedTuple} is immutable, so a sample is never changed after it is
+built. Latitude and longitude are not stored; they can be recomputed with
+\path{xy_to_latlon}.
+
+\subsection{\texttt{core/config.py} and \texttt{core/functional.py}}
+
+Create both files containing only a module docstring that says what the file
+will hold. Neither \path{core} nor \path{parsing} needs a function from
+them, so no function is written yet.
+
+\paragraph{Package interface (\texttt{core/\_\_init\_\_.py}).}
+Re-export \path{Sample}, \path{COL_TIMESTAMP}, \path{COL_LATITUDE},
+\path{COL_LONGITUDE} and \path{COL_DEPTH}, so that they can be imported
+from \path{analysis_app.core}.
+
+% =====================================================================
+\section{Package \texttt{parsing}}
+
+\subsection{\texttt{parsing/coordinates.py}}
+
+The file defines the constant \path{EARTH_RADIUS_M = 6_371_000.0} and three
+functions. All three work on whole numpy arrays at once; no loops over
+points.
+
+\begin{lstlisting}
+def choose_reference_origin(
+        lat_deg: np.ndarray,
+        lon_deg: np.ndarray) -> tuple[float, float]:
+
+def latlon_to_xy(
+        lat_deg: np.ndarray,
+        lon_deg: np.ndarray,
+        ref_origin: tuple[float, float]
+        ) -> tuple[np.ndarray, np.ndarray]:
+
+def xy_to_latlon(
+        x: np.ndarray,
+        y: np.ndarray,
+        ref_origin: tuple[float, float]
+        ) -> tuple[np.ndarray, np.ndarray]:
+\end{lstlisting}
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{0.30\textwidth}%
+                    >{\raggedright\arraybackslash}p{0.64\textwidth}@{}}
+\toprule
+\textbf{Function} & \textbf{Required behaviour}\\
+\midrule
+\endhead
+\path{choose_reference_origin} & Returns the mean latitude and the mean
+  longitude of the given points as a tuple of two Python floats.\\
+\path{latlon_to_xy} & Returns the arrays \path{(x, y)} in metres, computed
+  with the formulas below.\\
+\path{xy_to_latlon} & The exact inverse of \path{latlon_to_xy}; returns
+  \path{(lat_deg, lon_deg)} in degrees.\\
+\bottomrule
+\end{longtable}
+}
+
+With $\varphi,\lambda$ the latitude and longitude in radians and
+$(\varphi_0,\lambda_0)$ the reference origin in radians:
+\begin{equation*}
+  x = R\cos\varphi_0\,(\lambda-\lambda_0), \qquad
+  y = R\,(\varphi-\varphi_0),
+\end{equation*}
+and the inverse
+\begin{equation*}
+  \lambda = \lambda_0 + \frac{x}{R\cos\varphi_0}, \qquad
+  \varphi = \varphi_0 + \frac{y}{R}.
+\end{equation*}
+This is the equirectangular projection with the reference latitude as the
+standard parallel, the simplest choice for a small area. If the team's
+coordinate-system notes (topic T3) prescribe a different projection later,
+only this file changes; function names and signatures stay.
+
+\subsection{\texttt{parsing/csv\_parser.py}}
+
+Four functions. Only the first one reads from disk.
+
+\begin{lstlisting}
+def read_csv(path: str) -> tuple[list[str], np.ndarray]:
+
+def split_columns(header: list[str]
+        ) -> tuple[dict[str, int], dict[str, int]]:
+
+def build_sample(table: np.ndarray,
+                 fixed_idx: dict[str, int],
+                 param_idx: dict[str, int],
+                 ref_origin: tuple[float, float]) -> Sample:
+
+def parse_csv(path: str,
+              ref_origin: Optional[tuple[float, float]] = None
+              ) -> Sample:
+\end{lstlisting}
+
+{\small
+\begin{longtable}{@{}>{\raggedright\arraybackslash}p{0.19\textwidth}%
+                    >{\raggedright\arraybackslash}p{0.75\textwidth}@{}}
+\toprule
+\textbf{Function} & \textbf{Required behaviour}\\
+\midrule
+\endhead
+\path{read_csv} & Reads the file with \texttt{pd.read\_csv(path)} into a
+  \texttt{DataFrame}; this is the only use of pandas. The \emph{header} is the
+  list of column names with spaces stripped. The table is
+  \texttt{df.to\_numpy(dtype=np.float64)}, a 2D array of shape (rows, columns)
+  (see Section~\ref{sec:blocks}). Returns \path{(header, table)}; the
+  \texttt{DataFrame} is discarded inside the function.\\
+\path{split_columns} & Finds columns by name. Returns two dictionaries that
+  map a name to its column index: \path{fixed_idx}, keyed by
+  \path{COL_TIMESTAMP}, \path{COL_LATITUDE}, \path{COL_LONGITUDE} and, only
+  if the header contains it, \path{COL_DEPTH}; and \path{param_idx}, which
+  holds every remaining column in file order. The capital-letter naming of
+  parameters is not checked.\\
+\path{build_sample} & Cuts the columns out of \path{table}: timestamps
+  converted to \texttt{int64}; latitude and longitude turned into $x,y$ with
+  \path{latlon_to_xy}; depth as an array or \path{None}; one array per
+  parameter (use \path{.copy()}). Returns a \path{Sample}.\\
+\path{parse_csv} & The only function other packages call. It runs
+  \path{read_csv} and \path{split_columns}; if \path{ref_origin} is
+  \path{None} it computes one with \path{choose_reference_origin} from the
+  file's latitude and longitude columns; then it returns
+  \path{build_sample(...)}.\\
+\bottomrule
+\end{longtable}
+}
+
+The optional \path{ref_origin} argument exists so that several files can be
+converted around the same origin. When it is given, it is used unchanged.
+
+\paragraph{Package interface (\texttt{parsing/\_\_init\_\_.py}).}
+Re-export all functions of \path{coordinates.py} and \path{csv_parser.py}
+(seven in total).
+
+% =====================================================================
+\section{Worked example}
+
+Input file (made-up values):
+
+\begin{lstlisting}
+TIMESTAMP,LATITUDE,LONGITUDE,Z,PARAM_A,PARAM_B
+1730500000,50.00010,30.00020,0.5,12.4,0.83
+1730500001,50.00011,30.00022,0.5,12.6,0.80
+1730500002,50.00013,30.00025,0.5,13.1,0.79
+\end{lstlisting}
+
+\path{parse_csv(path)} must return a \path{Sample} with these contents ($x,y$
+computed with the formulas above, $R = 6\,371\,000$~m, mean latitude and
+longitude as origin):
+
+{\small
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Field} & \textbf{Value}\\
+\midrule
+\path{t} & \texttt{[1730500000, 1730500001, 1730500002]} (int64)\\
+\path{x} & \texttt{[-1.668, -0.238, 1.906]} metres\\
+\path{y} & \texttt{[-1.483, -0.371, 1.853]} metres\\
+\path{depth} & \texttt{[0.5, 0.5, 0.5]}\\
+\path{values} & keys \texttt{PARAM\_A}, \texttt{PARAM\_B};
+  \texttt{PARAM\_A} = \texttt{[12.4, 12.6, 13.1]}\\
+\path{ref_origin} & \texttt{(50.000113333, 30.000223333)}\\
+\bottomrule
+\end{tabular}
+\end{center}
+}
+
+
+% =====================================================================
+\section{Definition of done}
+
+Stage 1 is finished when all of the following hold. The checks are done by
+hand or in a throwaway script; the long-term tests are the sample sets in
+\path{samples/}.
+
+\begin{enumerate}
+\item \path{Sample} can be imported from \path{analysis_app.core}, and
+      \path{parse_csv} from \path{analysis_app.parsing}.
+\item \path{parse_csv} on the example file gives the values of the table
+      above (agreement within 0.001~m for $x,y$).
+\item \path{latlon_to_xy} applied to the reference origin itself gives
+      $(0,0)$, and \path{xy_to_latlon} applied to the result of
+      \path{latlon_to_xy} returns the original latitude and longitude to
+      within $10^{-9}$ degrees.
+\item A file with an extra parameter column and without a \texttt{Z} column
+      parses correctly: the new name appears in \path{values}, and
+      \path{depth} is \path{None}.
+\item \path{read_csv} returns a list of text names and a 2D \texttt{float64}
+      numpy array. No pandas object appears anywhere else, and no file
+      imports anything except numpy, the standard library and (in
+      \path{parsing}) \path{core}; only \path{csv_parser.py} imports pandas.
+\end{enumerate}
+
+% =====================================================================
+\section{Where to read (for beginners)}
+
+Official numpy, pandas and Python documentation, plus Wikipedia. Start
+with the numpy and pandas basics; open the others when you reach that function.
+
+\begin{itemize}
+\item \textbf{numpy basics} (arrays, shape, indexing, slicing, dtype, copy): \lnk{https://numpy.org/doc/stable/user/absolute_beginners.html}
+\item \textbf{pandas basics} (10 minutes to pandas, covers \texttt{DataFrame},
+      columns and \texttt{to\_numpy}): \lnk{https://pandas.pydata.org/docs/user_guide/10min.html}
+\item \textbf{Reading the CSV} -- \texttt{pd.read\_csv}: \lnk{https://pandas.pydata.org/docs/reference/api/pandas.read_csv.html}
+\item \textbf{DataFrame to numpy} -- \texttt{DataFrame.to\_numpy}: \lnk{https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.to_numpy.html}
+\item \textbf{Degrees to radians} -- \texttt{np.radians}: \lnk{https://numpy.org/doc/stable/reference/generated/numpy.radians.html}
+\item \textbf{The \texttt{Sample} container} -- \texttt{typing.NamedTuple}: \lnk{https://docs.python.org/3/library/typing.html}
+\item \textbf{Packages and imports} (\texttt{\_\_init\_\_.py}): \lnk{https://docs.python.org/3/tutorial/modules.html}
+\item \textbf{Coordinate formulas} (equirectangular projection):
+      \lnk{https://en.wikipedia.org/wiki/Equirectangular_projection}
+\end{itemize}
+
+\end{document}

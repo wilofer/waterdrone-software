@@ -1,0 +1,263 @@
+\documentclass{article}
+
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[obeyspaces,spaces]{url}
+\urlstyle{tt}
+
+\definecolor{newcolor}{rgb}{0.85,0.30,0.00}
+\lstset{basicstyle=\ttfamily\footnotesize, frame=single, keepspaces=true,
+        showstringspaces=false, aboveskip=6pt, belowskip=4pt,
+        moredelim=[is][\color{newcolor}]{@@}{@@}}
+
+\title{Technical Requirements:\\ \texttt{core} and \texttt{parsing}\\[1mm]
+       \large UKRAINIX WATERDRONE -- analysis-app}
+\author{}
+\date{17 November 2026}
+
+\begin{document}
+\maketitle
+
+\section{Scope and conventions}
+
+This document specifies only the packages \path{core} and \path{parsing}
+of the analysis app (both inside \path{src/analysis_app/}). Nothing else of
+the planned app is needed for this step, and nothing else should be written
+yet.
+
+\begin{itemize}
+\item \textbf{No data validation.} Assume a well-formed CSV: header present,
+      all columns numeric and of equal length, no NaN values, no duplicate
+      timestamps, no GPS glitches. Pure analysis only.
+\item \textbf{Data type.} All data are 1-D numpy arrays: \path{int64} for
+      timestamps, \path{float64} for everything else. Angles in degrees,
+      distances in metres at every interface.
+\item \textbf{Style.} Plain functions, no classes (except the
+      \path{NamedTuple} below); inputs are never modified in place. Each
+      package's \path{__init__.py} re-exports its public functions. Python
+      3.10 or newer is assumed.
+\item \textbf{Done when} every example below reproduces (floating-point noise
+      ignored, $x,y$ within 0.1~m), converting to $x,y$ and back returns the
+      input within $10^{-9}$ degrees, and all functions work for any number of
+      rows and parameter columns.
+\end{itemize}
+
+\section{Libraries to use}
+
+Please use established libraries instead of hand-written replacements:
+
+\begin{itemize}
+\item \path{numpy} -- all arrays and all numerical work;
+\item \path{pandas} -- reading the CSV (\path{pandas.read_csv}), then
+      \path{.to_numpy()} for every column;
+\item \path{pyproj} -- optional: cross-check of the coordinate conversion
+      (azimuthal equidistant projection centred on the reference origin);
+\item standard library -- \path{pathlib} for paths, \path{typing} for the
+      \path{NamedTuple};
+\item \path{pytest} -- optional: turn the examples below into tests.
+\end{itemize}
+
+\section{Files to create}
+
+Exactly the seven files shown in \textcolor{newcolor}{\textbf{orange}} are to
+be created; marked \texttt{[new]} as well. The two folders already exist.
+
+\begin{lstlisting}
+src/analysis_app/
+|-- core/                           exists, holds only .gitkeep
+|   |-- @@__init__.py@@                 [new]
+|   |-- @@types.py@@                    [new]
+|   |-- @@config.py@@                   [new]
+|   \-- @@functional.py@@               [new]
+\-- parsing/                        exists, holds only .gitkeep
+    |-- @@__init__.py@@                 [new]
+    |-- @@coordinates.py@@              [new]
+    \-- @@csv_parser.py@@               [new]
+\end{lstlisting}
+
+\begin{itemize}
+\item The two \path{__init__.py} files only re-export the public names of
+      their package: \path{core} -- \path{Sample}, the column constants,
+      \path{config_dir}, \path{samples_dir}, \path{read_dict_file},
+      \path{pipe}, \path{map_parameters}; \path{parsing} -- all seven
+      functions of Section~\ref{sec:parsing}.
+\item Nothing else is created: no tests, no \path{pyproject.toml}, nothing in
+      other packages. Once the files exist, the placeholder \path{.gitkeep}
+      in each of the two folders can be removed.
+\end{itemize}
+
+\section{What is assumed to exist}
+
+Nothing outside these five files is assumed; their dependencies are:
+
+\begin{center}
+\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.28\textwidth}>{\raggedright\arraybackslash}p{0.22\textwidth}>{\raggedright\arraybackslash}p{0.36\textwidth}@{}}
+\toprule
+\textbf{File} & \textbf{Imports from project} & \textbf{Provides}\\
+\midrule
+\path{core/types.py} & -- & \path{Sample}, column-name constants\\
+\path{core/config.py} & -- & \path{config_dir}, \path{samples_dir}, \path{read_dict_file}\\
+\path{core/functional.py} & -- & \path{pipe}, \path{map_parameters}\\
+\path{parsing/coordinates.py} & -- & \path{choose_reference_origin}, \path{latlon_to_xy}, \path{xy_to_latlon}\\
+\path{parsing/csv_parser.py} & \path{core.types}, \path{parsing.coordinates} & \path{read_columns}, \path{parameter_names}, \path{build_sample}, \path{load_sample}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =====================================================================
+\section{Package \texttt{core}}
+
+\subsection{\texttt{core/types.py}}
+
+Constants and one data container; no other containers are needed yet.
+
+\begin{lstlisting}
+COL_TIME, COL_LAT, COL_LON, COL_DEPTH = (
+    "TIMESTAMP", "LATITUDE", "LONGITUDE", "Z")
+FIXED_COLUMNS = (COL_TIME, COL_LAT, COL_LON, COL_DEPTH)
+
+class Sample(NamedTuple):
+    t: np.ndarray        # (n,) int64   timestamps
+    x: np.ndarray        # (n,) float64 metres, east of ref_origin
+    y: np.ndarray        # (n,) float64 metres, north of ref_origin
+    depth: np.ndarray | None   # (n,) float64, None if no Z column
+    values: dict[str, np.ndarray]  # parameter -> (n,) float64
+    ref_origin: tuple[float, float]  # (lat0, lon0) in degrees
+\end{lstlisting}
+
+\subsection{\texttt{core/config.py}}
+
+\begin{itemize}
+\item \path{config_dir() -> Path} -- the folder \path{analysis-app/config},
+      found from the location of the file itself, not from the working
+      directory.
+\item \path{samples_dir() -> Path} -- the repository-level
+      \path{samples/} folder, found the same way.
+\item \path{read_dict_file(path) -> dict[str, str]} -- one entry per line in
+      the form \path{KEY value}: key = first word, value = rest of the
+      line, stripped. Empty lines and lines starting with \verb|#| are
+      skipped. (This text format is a working assumption.)
+\end{itemize}
+
+\begin{lstlisting}
+# file: "PARAM_A model_one" and "PARAM_B model_two" lines
+>>> samples_dir()
+PosixPath('/home/user/waterdrone-software/samples')
+>>> read_dict_file(config_dir() / "physics_models.txt")
+{'PARAM_A': 'model_one', 'PARAM_B': 'model_two'}
+\end{lstlisting}
+
+\subsection{\texttt{core/functional.py}}
+
+\begin{itemize}
+\item \path{pipe(value, *funcs)} -- applies the functions left to right:
+      \path{funcs[-1](...funcs[0](value))}. With no functions it returns
+      \path{value}.
+\item \path{map_parameters(func, sample) -> dict} -- calls
+      \path{func(sample, name)} once for every parameter name in
+      \path{sample.values} (file order) and returns \verb|{name: result}|.
+\end{itemize}
+
+\begin{lstlisting}
+>>> pipe(np.array([1., 4., 9.]), np.sqrt, np.sum)
+6.0
+>>> # sample: the one built in Section 6; result shown rounded
+>>> map_parameters(lambda s, p: s.values[p].mean(), sample)
+{'PARAM_A': 12.7, 'PARAM_B': 0.8067}
+\end{lstlisting}
+
+% =====================================================================
+\section{Package \texttt{parsing}}
+\label{sec:parsing}
+
+\subsection{\texttt{parsing/coordinates.py}}
+
+Converts GPS positions to local Cartesian coordinates: $x$ towards east, $y$
+towards north, in metres, relative to a reference origin.
+
+\begin{itemize}
+\item \path{choose_reference_origin(lat, lon) -> (lat0, lon0)} -- centre of
+      the bounding box of the points. Called once, for the first sample; later
+      samples reuse the same origin so that all samples overlay.
+\item \path{latlon_to_xy(lat, lon, ref_origin) -> (x, y)} -- arrays in,
+      arrays of the same shape out; the reference origin maps to $(0,0)$.
+      Use the method from the team's lecture notes \emph{T3 -- geographic
+      coordinates translation}. A small-area approximation is sufficient:
+      $x=R\cos\varphi_0\,(\lambda-\lambda_0)$,
+      $y=R\,(\varphi-\varphi_0)$ with angles in radians and
+      $R=6\,371\,000$~m. The examples below use this formula; any reasonable
+      projection agrees with them to within 0.1~m.
+\item \path{xy_to_latlon(x, y, ref_origin) -> (lat, lon)} -- inverse of
+      \path{latlon_to_xy}. A round trip returns the input to within
+      $10^{-9}$ degrees.
+\end{itemize}
+
+\noindent\begin{minipage}{\textwidth}
+\begin{lstlisting}
+>>> lat = np.array([50.0000, 50.0001, 50.0002])
+>>> lon = np.array([30.0000, 30.0002, 30.0004])
+>>> ref = choose_reference_origin(lat, lon)
+>>> ref
+(50.0001, 30.0002)
+>>> x, y = latlon_to_xy(lat, lon, ref)       # shown rounded
+>>> x
+array([-14.295,   0.   ,  14.295])
+>>> y
+array([-11.119,   0.   ,  11.119])
+>>> lat2, lon2 = xy_to_latlon(x, y, ref)
+>>> np.allclose(lat2, lat), np.allclose(lon2, lon)
+(True, True)
+\end{lstlisting}
+\end{minipage}
+
+\subsection{\texttt{parsing/csv\_parser.py}}
+
+\begin{itemize}
+\item \path{read_columns(path) -> dict[str, ndarray]} -- reads the CSV with
+      its header row; returns \verb|{column name: 1-D array}| in file order,
+      \path{TIMESTAMP} as \path{int64}, all other columns as
+      \path{float64}.
+\item \path{parameter_names(columns) -> list[str]} -- all column names that
+      are not in \path{FIXED_COLUMNS}, in file order.
+\item \path{build_sample(columns, ref_origin=None) -> Sample} -- computes
+      \path{x, y} from \path{LATITUDE} and \path{LONGITUDE} with
+      \path{latlon_to_xy}; if \path{ref_origin} is \path{None} it first
+      calls \path{choose_reference_origin}. \path{depth} is the \path{Z}
+      column, or \path{None} if there is none. \path{values} holds one array
+      per parameter name.
+\item \path{load_sample(path, ref_origin=None) -> Sample} --
+      \path{read_columns} followed by \path{build_sample}.
+\end{itemize}
+
+Example file \path{lake_run_03.csv}:
+
+\begin{lstlisting}
+TIMESTAMP,LATITUDE,LONGITUDE,Z,PARAM_A,PARAM_B
+1730500000,50.00000,30.00000,0.5,12.4,0.83
+1730500001,50.00010,30.00020,0.5,12.6,0.80
+1730500002,50.00020,30.00040,0.5,13.1,0.79
+\end{lstlisting}
+
+\begin{lstlisting}
+>>> cols = read_columns("lake_run_03.csv")
+>>> list(cols)
+['TIMESTAMP', 'LATITUDE', 'LONGITUDE', 'Z', 'PARAM_A', 'PARAM_B']
+>>> parameter_names(cols)
+['PARAM_A', 'PARAM_B']
+>>> sample = load_sample("lake_run_03.csv")
+>>> sample.ref_origin
+(50.0001, 30.0002)
+>>> sample.x                                 # shown rounded
+array([-14.295,   0.   ,  14.295])
+>>> sample.y
+array([-11.119,   0.   ,  11.119])
+>>> sample.values["PARAM_B"]
+array([0.83, 0.8 , 0.79])
+>>> # a second file in the same local frame as the first:
+>>> other = load_sample("another.csv", ref_origin=sample.ref_origin)
+\end{lstlisting}
+
+\end{document}

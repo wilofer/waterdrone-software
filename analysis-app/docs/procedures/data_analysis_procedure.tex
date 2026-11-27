@@ -1,0 +1,65 @@
+\documentclass{article}
+
+\usepackage{amsmath}
+
+\begin{document}
+
+\begin{center}
+{\Large\bfseries Procedure for Analysing the Collected Data}\\[1mm]
+UKRAINIX WATERDRONE project \quad 18 November 2026
+\end{center}
+
+\noindent\textbf{Input and notation.} The input is one waterdrone CSV file:
+\texttt{TIMESTAMP}, \texttt{LATITUDE} and \texttt{LONGITUDE} (degrees),
+optionally \texttt{Z} (measurement depth), and one capitalised column for each
+measured parameter. The procedure is run separately for every parameter.
+There are $K$ measurement points $\mathbf r_j$ ($j=1,\dots,K$) and $N$ assumed
+sources ($i=1,\dots,N$).
+
+\begin{enumerate}
+\item \textbf{Convert coordinates.} Convert the geographic coordinates
+      (degrees) of the $K$ points to Cartesian metres around a common
+      reference origin (lecture topic~3): $\mathbf r_j=(x_j,y_j,z_j)$, with
+      $z_j$ from the depth column.
+
+\item \textbf{Normalise (optional).} Normalise the measured values against
+      a quick control-point sample to remove their time dependence. Below,
+      $u_e(\mathbf r_j)$ are the normalised values (raw if skipped).
+
+\item \textbf{Assume $N$ sources.} Each source is described by its position
+      and strength, $Q_i=Q_i(x_i,y_i,z_i,q_i)$, so there are $4N$ unknown
+      parameters.
+
+\item \textbf{Field of the point sources.} The theoretical field is the sum of
+      the point-source fields,
+      \[
+        u_T(\mathbf r)=\sum_{i=1}^{N}\frac{Q_i}{4\pi\varepsilon_0\,
+        |\mathbf r-\mathbf r_i|},\qquad \mathbf r_i=(x_i,y_i,z_i).
+      \]
+
+\item \textbf{Misfit.} Compare the field with the measurements; $S$ depends
+      on the $4N$ unknowns:
+      \[
+        S(x_i,y_i,z_i,q_i)=\sum_{j=1}^{K}
+        \bigl|u_T(\mathbf r_j)-u_e(\mathbf r_j)\bigr|^{2}.
+      \]
+
+\item \textbf{Least squares.} Minimise $S$ by least squares (starting guess,
+      bounds on the parameters). This gives $x_i,y_i,z_i,q_i$ and hence the
+      best-fit field $u_{T}^{\min}$. Check the RMS residual and that $N$ is
+      reasonable.
+
+\item \textbf{Isolines.} Build the isolines of the field: triangulate the
+      points, find where each level crosses the triangle edges, join the
+      crossings and smooth them with a spline.
+
+\item \textbf{Visualise.} Draw a 3D plot ($x,y$ in metres, vertical axis =
+      parameter value) with the isolines and the found sources; a dropdown
+      selects the parameter.
+
+\item \textbf{Experiment with physical models.} Replace the point-source model
+      of step~4 by other forward models (one entry per parameter in a
+      dictionary file) and repeat steps 4--8 to compare the resulting $S$.
+\end{enumerate}
+
+\end{document}
